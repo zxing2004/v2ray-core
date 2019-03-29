@@ -176,7 +176,7 @@ func (r *AuthenticationReader) readInternal(soft bool, mb *buf.MultiBuffer) erro
 		if err != nil {
 			return nil
 		}
-		mb.Append(b)
+		*mb = append(*mb, b)
 		return nil
 	}
 
@@ -194,7 +194,7 @@ func (r *AuthenticationReader) readInternal(soft bool, mb *buf.MultiBuffer) erro
 		return err
 	}
 
-	common.Must2(mb.Write(rb))
+	*mb = buf.MergeBytes(*mb, rb)
 	return nil
 }
 
@@ -202,7 +202,7 @@ func (r *AuthenticationReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	const readSize = 16
 	mb := make(buf.MultiBuffer, 0, readSize)
 	if err := r.readInternal(false, &mb); err != nil {
-		mb.Release()
+		buf.ReleaseMulti(mb)
 		return nil, err
 	}
 
@@ -212,7 +212,7 @@ func (r *AuthenticationReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 			break
 		}
 		if err != nil {
-			mb.Release()
+			buf.ReleaseMulti(mb)
 			return nil, err
 		}
 	}
@@ -269,7 +269,7 @@ func (w *AuthenticationWriter) seal(b []byte) (*buf.Buffer, error) {
 }
 
 func (w *AuthenticationWriter) writeStream(mb buf.MultiBuffer) error {
-	defer mb.Release()
+	defer buf.ReleaseMulti(mb)
 
 	var maxPadding int32
 	if w.padding != nil {
@@ -279,17 +279,22 @@ func (w *AuthenticationWriter) writeStream(mb buf.MultiBuffer) error {
 	payloadSize := buf.Size - int32(w.auth.Overhead()) - w.sizeParser.SizeBytes() - maxPadding
 	mb2Write := make(buf.MultiBuffer, 0, len(mb)+10)
 
+	temp := buf.New()
+	defer temp.Release()
+
+	rawBytes := temp.Extend(payloadSize)
+
 	for {
-		b := buf.New()
-		common.Must2(b.ReadFrom(io.LimitReader(&mb, int64(payloadSize))))
-		eb, err := w.seal(b.Bytes())
-		b.Release()
+		nb, nBytes := buf.SplitBytes(mb, rawBytes)
+		mb = nb
+
+		eb, err := w.seal(rawBytes[:nBytes])
 
 		if err != nil {
-			mb2Write.Release()
+			buf.ReleaseMulti(mb2Write)
 			return err
 		}
-		mb2Write.Append(eb)
+		mb2Write = append(mb2Write, eb)
 		if mb.IsEmpty() {
 			break
 		}
@@ -299,7 +304,7 @@ func (w *AuthenticationWriter) writeStream(mb buf.MultiBuffer) error {
 }
 
 func (w *AuthenticationWriter) writePacket(mb buf.MultiBuffer) error {
-	defer mb.Release()
+	defer buf.ReleaseMulti(mb)
 
 	mb2Write := make(buf.MultiBuffer, 0, len(mb)+1)
 
@@ -313,7 +318,7 @@ func (w *AuthenticationWriter) writePacket(mb buf.MultiBuffer) error {
 			continue
 		}
 
-		mb2Write.Append(eb)
+		mb2Write = append(mb2Write, eb)
 	}
 
 	if mb2Write.IsEmpty() {
